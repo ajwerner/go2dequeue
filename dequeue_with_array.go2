@@ -1,0 +1,239 @@
+package go2dequeue
+
+import (
+	"reflect"
+	"sync"
+)
+
+// Dequeue is a generic double-ended queue.
+//
+// The interface is designed to make it easy to allocate allocate instances of
+// stucts in an amortized way, perhaps for decoding a stream of objects.
+//
+// The purpose of this exercise is primarily to illustrate the challenge of
+// creating generic data structures which provide a high-degree of access
+// locality. The example here is potentially contrived but illustrate the
+// problem one would have if they were to try to implement an B-Tree which
+// inlined the blocks into the tree nodes.
+type Dequeue(type T) interface {
+
+	// Len returns the current number of elements in the Dequeue.
+	Len() int
+
+	// AllocFront allocates a new element at the front of the Dequeue.
+	AllocFront() *T
+
+	// AllocBack allocates a new element at the back of the Dequeue.
+	AllocBack() *T
+
+	// PopFront removes the front element from the Dequeue and returns it.
+	// False and a zero-valued are returned if the Dequeue is empty.
+	PopFront() (T, bool)
+
+	// PopBack removes the back element from the Dequeue and returns it.
+	// False and a zero-valued are returned if the Dequeue is empty.
+	PopBack() (T, bool)
+}
+
+// PushFront pushes el on the front of d.
+func PushFront(type T)(d Dequeue(T), el T) {
+	(*d.AllocFront()) = el
+}
+
+// PushBack pushes el on the back of d.
+func PushBack(type T)(d Dequeue(T), el T) {
+	(*d.AllocBack()) = el
+}
+
+// NewWithArray constructs a new Dequeue implemented as a linked list of
+// ring-buffers where each ring-buffer is backed by an array of type
+// ArrayT. The intention is that ArrayT is an array of T. If the zero-value of
+// len(toSlice(ArrayT{})) == 0, this function will panic.
+func NewWithArray(type T, ArrayT)(
+	toSlice ToSliceFunc(T, ArrayT),
+) Dequeue(T) {
+	var v nodeWithArray(T, ArrayT)
+	return &(dequeueWithArray(T, ArrayT){
+		toSlice:  toSlice,
+		nodePool: getOrCreateSyncPool(reflect.TypeOf(&v).Elem()),
+	})
+}
+
+// ToSliceFunc is a function that converts some a pointer to some type intended
+// to be an array of T to a slice of T.
+type ToSliceFunc(type T, ArrayT) func(*ArrayT) []T
+
+// syncPools contains a mapping from specialized node types to a sync.Pool for
+// that node type. The idea is that each dequeue of a
+// dequeueWithArray(T, ArrayT) will utilize a sync.Pool of nodes used in its
+// linked list.
+var syncPools = struct {
+	sync.Mutex
+	typeMap map[reflect.Type]*sync.Pool
+}{
+	typeMap: make(map[reflect.Type]*sync.Pool),
+}
+
+func getOrCreateSyncPool(nodeT reflect.Type) *sync.Pool {
+	syncPools.Lock()
+	defer syncPools.Unlock()
+	if pool, ok := syncPools.typeMap[nodeT]; ok {
+		return pool
+	}
+	pool := &sync.Pool{New: func() interface{} {
+		return reflect.New(nodeT).Interface()
+	}}
+	syncPools.typeMap[nodeT] = pool
+	return pool
+}
+
+type dequeueWithArray(type T, ArrayT) struct {
+	toSlice    ToSliceFunc(T, ArrayT)
+	nodePool   *sync.Pool
+	len        int
+	head, tail *nodeWithArray(T, ArrayT)
+}
+
+func (d *dequeueWithArray(T, ArrayT)) newNode() *nodeWithArray(T, ArrayT) {
+	n := d.nodePool.Get().(*nodeWithArray(T, ArrayT))
+	n.rb.buf = d.toSlice(&n.rb.array)
+	return n
+}
+
+func (d *dequeueWithArray(T, ArrayT)) putNode(n *nodeWithArray(T, ArrayT)) {
+	*n = func() (ret nodeWithArray(T, ArrayT)) { return ret }()
+	d.nodePool.Put(n)
+}
+
+func (d *dequeueWithArray(T, ArrayT)) AllocFront() *T {
+	if d.head == nil {
+		// initialize
+		d.head = d.newNode()
+		d.tail = d.head
+	}
+	if d.head.rb.full() {
+		// add new head
+		newHead := d.newNode()
+		newHead.next = d.head
+		d.head.prev = newHead
+		d.head = newHead
+	}
+	d.len++
+	return d.head.rb.allocFront()
+}
+
+func (d *dequeueWithArray(T, ArrayT)) AllocBack() *T {
+	if d.head == nil {
+		// initialize
+		d.head = d.newNode()
+		d.tail = d.head
+	}
+	if d.tail.rb.full() {
+		// add new tail
+		newTail := d.newNode()
+		newTail.prev = d.tail
+		d.tail.next = newTail
+		d.tail = newTail
+	}
+	d.len++
+	return d.tail.rb.allocBack()
+}
+
+func (d *dequeueWithArray(T, ArrayT)) PopFront() (ret T, ok bool) {
+	if d.len == 0 {
+		return ret, false
+	}
+	d.len--
+	return d.removeFront(), true
+}
+
+func (d *dequeueWithArray(T, ArrayT)) PopBack() (ret T, ok bool) {
+	if d.len == 0 {
+		return ret, false
+	}
+	d.len--
+	return d.removeBack(), true
+}
+
+func (d *dequeueWithArray(T, ArrayT)) removeFront() T {
+	ret := d.head.rb.removeFront()
+	if d.head.rb.len == 0 {
+		oldHead := d.head
+		d.head = oldHead.next
+		d.putNode(oldHead)
+	}
+	return ret
+}
+
+func (d *dequeueWithArray(T, ArrayT)) removeBack() T {
+	ret := d.tail.rb.removeBack()
+	if d.tail.rb.len == 0 {
+		oldTail := d.tail
+		d.tail = oldTail.prev
+		d.putNode(oldTail)
+	}
+	return ret
+}
+
+func (d *dequeueWithArray(T, ArrayT)) Len() int {
+	return d.len
+}
+
+type nodeWithArray(type T, ArrayT) struct {
+	rb         ringBufWithArray(T, ArrayT)
+	next, prev *nodeWithArray(T, ArrayT)
+}
+
+type ringBufWithArray(type T, ArrayT) struct {
+	head, len int
+	array     ArrayT
+	buf       []T
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) full() bool {
+	return rb.len == len(rb.buf)
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) at(idx int) *T {
+	return &rb.buf[(rb.head+idx)%len(rb.buf)]
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) allocFront() *T {
+	if rb.head--; rb.head < 0 {
+		rb.head = len(rb.buf) - 1
+	}
+	rb.len++
+	return rb.peekFront()
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) allocBack() *T {
+	rb.len++
+	return rb.peekBack()
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) removeFront() T {
+	head := rb.at(0)
+	ret := *head
+	*head = func() (t T) { return t }()
+	if rb.head++; rb.head == len(rb.buf) {
+		rb.head = 0
+	}
+	rb.len--
+	return ret
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) removeBack() T {
+	tail := rb.at(rb.len - 1)
+	ret := *tail
+	*tail = func() (t T) { return t }()
+	rb.len--
+	return ret
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) peekFront() *T {
+	return rb.at(0)
+}
+
+func (rb *ringBufWithArray(T, ArrayT)) peekBack() *T {
+	return rb.at(rb.len - 1)
+}

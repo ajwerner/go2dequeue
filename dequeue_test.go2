@@ -1,0 +1,84 @@
+package go2dequeue
+
+import (
+	"fmt"
+	"testing"
+	"unsafe"
+)
+
+func TestIntDequeueWithArray(t *testing.T) {
+	for _, N := range []int{
+		1, 2, 3, 16, 17, 129,
+	} {
+		t.Run(fmt.Sprint(N), func(t *testing.T) {
+			testIntDequeue(t, NewWithArray(func(a *[16]int) []int {
+				return (*a)[:]
+			}), N)
+		})
+	}
+}
+
+func assertEqual(t *testing.T, a, b interface{}) {
+	t.Helper()
+	if a != b {
+		t.Fatalf("%v != %v", a, b)
+	}
+}
+
+func testIntDequeue(t *testing.T, d Dequeue(int), N int) {
+	expLen := 0
+	checkLen := func() {
+		assertEqual(t, expLen, d.Len())
+	}
+	checkLen()
+	for i := N / 2; i >= 0; i-- {
+		PushFront(d, i)
+		expLen++
+		checkLen()
+	}
+	for i := (N / 2) + 1; i < N; i++ {
+		PushBack(d, i)
+		expLen++
+		checkLen()
+	}
+	var results []int
+	for d.Len() > 0 {
+		v, ok := d.PopFront()
+		assertEqual(t, true, ok)
+		results = append(results, v)
+		expLen--
+		checkLen()
+	}
+	assertEqual(t, N, len(results))
+	for i := range results {
+		assertEqual(t, i, results[i])
+	}
+}
+
+func NodeSize(type T, ArrayT)(d *dequeueWithArray(T, ArrayT)) int {
+	n := d.newNode()
+	defer d.putNode(n)
+	return int(unsafe.Sizeof(*n))
+}
+
+type Thing struct {
+	Foo   int64
+	Bar   int64
+	IDBuf [16]byte
+}
+
+func TestNodeSize(t *testing.T) {
+	const N = 37
+	d := NewWithArray(func(a *[N]Thing) []Thing {
+		return (*a)[:]
+	}).(*dequeueWithArray(Thing, [N]Thing))
+	got := NodeSize(d)
+	exp := 16 + /* left + right */
+		16 + /* head + len */ +24 + /* slice header */
+		N*int(unsafe.Sizeof(Thing{}))
+	if got != exp {
+		t.Fatalf("expected %d, got %d", exp, got)
+	} else {
+		t.Logf("Node is %d bytes", got)
+	}
+}
